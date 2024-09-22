@@ -1,5 +1,5 @@
 # Author: Alan Chan (alanc@mso.anu.edu.au)
-# Analytical solutions for different Universe type at redshift of 0.01, 0.1, and 1
+# Numerical methods solutions for different Universe type at redshift of 0.01, 0.1, and 1
 # V2.2
 # fixed km/s from m/s
 
