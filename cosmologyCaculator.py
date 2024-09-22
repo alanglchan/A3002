@@ -1,96 +1,116 @@
 #Author: Alan Chan (alanc@mso.anu.edu.au)
 #20240911 - for A3002 Q1
 
-import numpy as np
 import matplotlib.pyplot as plt
-import pandas as pd
-import argparse
+import numpy as np
+from scipy.integrate import odeint
+import astropy.constants as const
+import astropy.units as u
 
-# Constants
-H0 = 70  # Hubble constant in km/s/Mpc
-c = 3e5  # Speed of light in km/s
+# Cosmological Parameters
+Omega_Lambda = 0.7
+Omega_m = 0.3
+Omega_k = 1.0 - (Omega_Lambda + Omega_m)
+H_0 = 70e-3  # Hubble constant in km/s/Mpc (converted to Gyr^-1 for simplicity)
+epsilon = 1e-10  # Small value to avoid negative sqrt
 
-# Different cosmological models (ensure all return arrays)
-def hubble_empty_universe(z):
-    """Hubble parameter for an empty universe."""
-    return H0 * (1 + z)
+# Friedmann Equation (scale factor evolution)
+def friedmann_eq(a, t):    
+    term = Omega_m/a**3 + Omega_Lambda + Omega_k/a**2
+    term = np.maximum(term, epsilon)  # Prevent negative values inside sqrt
+    H = H_0 * np.sqrt(term)
+    return -H * a
 
-def hubble_matter_only_universe(z):
-    """Hubble parameter for a matter-only universe."""
-    Omega_m = 1.0
-    return H0 * np.sqrt(Omega_m * (1 + z)**3)
+# Function to calculate all quantities for a given dt
+def calculate_quantities(dt):
+    t = np.arange(0, 13.78, dt)
+    a0 = 1.0  # Present scale factor
+    a = odeint(friedmann_eq, a0, t, rtol=1e-5, atol=1e-8).flatten()  # Solve for a(t)
 
-def hubble_lambda_only_universe(z):
-    """Hubble parameter for a lambda-only universe."""
-    Omega_lambda = 1.0
-    return H0 * np.sqrt(Omega_lambda * np.ones_like(z))
+    # Mask NaN values
+    valid_mask = ~np.isnan(a)
+    a = a[valid_mask]
+    t = t[valid_mask]
 
-def hubble_mixed_universe(z):
-    """Hubble parameter for a universe with Ω_m = 0.3, Ω_Λ = 0.7."""
-    Omega_m = 0.3
-    Omega_lambda = 0.7
-    return H0 * np.sqrt(Omega_m * (1 + z)**3 + Omega_lambda)
+    # Redshift z = 1/a - 1
+    z = 1/a - 1
 
-# Luminosity distance
-def luminosity_distance(z, hubble_fn):
-    """Calculate luminosity distance D_L for a given hubble function."""
-    z_vals = np.linspace(0, z, 1000)  # Create an array of redshift values
-    integrand = c / hubble_fn(z_vals)  # Vectorized operation
-    D_C = np.trapz(integrand, z_vals)  # Perform numerical integration
-    return D_C * (1 + z)
+    # Proper distance calculation
+    speed_of_light = const.c.to(u.Glyr/u.Gyr).value  # c in Glyr/Gyr
+    dp = speed_of_light * np.cumsum(1/a) * dt  # Proper distance in Glyr
 
-# Calculate distance modulus μ
-def distance_modulus(D_L):
-    """Calculate the distance modulus μ."""
-    return 5 * np.log10(D_L) - 5
+    # Curvature and Angular Diameter Distance
+    if Omega_k > 0:
+        R_0 = speed_of_light / (H_0 * np.sqrt(Omega_k))
+        d_A = R_0 * np.sinh(dp/R_0) / (1 + z)
+    elif Omega_k < 0:
+        R_0 = speed_of_light / (H_0 * np.sqrt(-Omega_k))
+        d_A = R_0 * np.sin(dp/R_0) / (1 + z)
+    else:
+        d_A = dp / (1 + z)
 
-# Apply the model to data
-def calculate_moduli(data, hubble_fn):
-    """Calculate the distance moduli for the given data and Hubble function."""
-    mu_model = []
-    for z in data['z']:
-        D_L = luminosity_distance(z, hubble_fn)
-        mu_model.append(distance_modulus(D_L))
-    return mu_model
+    # Luminosity Distance
+    d_L = dp * (1 + z)
 
-def main():
-    # Parse the CSV file path from the command line
-    parser = argparse.ArgumentParser(description="Cosmology Calculator")
-    parser.add_argument("csv_file", help="Path to the CSV file containing redshift and distance modulus data")
-    args = parser.parse_args()
+    # Hubble Parameter
+    H = H_0 * np.sqrt(Omega_m/a**3 + Omega_Lambda + Omega_k/a**2) * 1e3  # km/s/Mpc
 
-    # Load data from the provided CSV file and strip whitespace from columns
-    data = pd.read_csv(args.csv_file)
-    data.columns = data.columns.str.strip()  # Strip any leading/trailing whitespace from column names
+    # Distance Modulus
+    dist_mod = 5 * np.log10(dp * u.Glyr.to(u.pc) / 10)
 
-    # Display the columns to verify the correct names
-    print("Columns in the dataset:", data.columns)
+    return t, a, z, dp, d_A, d_L, H, dist_mod
 
-    # Ensure we use the correct column names
-    z_column = 'z'        # Column for redshift
-    mu_column = 'mu'      # Column for distance modulus
-    dmu_column = 'dmu'    # Column for error in distance modulus
+# Plotting function for multiple dt values with different line styles
+def plot_multiple_dt(dts, title, y_label, calc_func):
+    plt.figure(figsize=(8, 6))
 
-    # Compare with four models
-    data['mu_empty'] = calculate_moduli(data, hubble_empty_universe)
-    data['mu_matter_only'] = calculate_moduli(data, hubble_matter_only_universe)
-    data['mu_lambda_only'] = calculate_moduli(data, hubble_lambda_only_universe)
-    data['mu_mixed'] = calculate_moduli(data, hubble_mixed_universe)
+    # Define line width, alpha (transparency), and line styles based on dt
+    line_widths = {1.0: 2, 0.1: 2, 0.01: 2}
+    alphas = {1.0: 1, 0.1: 0.8, 0.01: 0.7}
+    line_styles = {1.0: '-', 0.1: '--', 0.01: '-.'}  # Solid, dashed, dash-dot
 
-    # Plot the distance modulus vs redshift
-    plt.figure(figsize=(10, 6))
-    plt.errorbar(data[z_column], data[mu_column], yerr=data[dmu_column], fmt='o', label="Observed Data", capsize=1)
-    plt.plot(data[z_column], data['mu_empty'], label="Empty Universe")
-    plt.plot(data[z_column], data['mu_matter_only'], label="Matter-only Universe")
-    plt.plot(data[z_column], data['mu_lambda_only'], label="Lambda-only Universe")
-    plt.plot(data[z_column], data['mu_mixed'], label="Mixed Universe (Ω_m=0.3, Ω_Λ=0.7)")
+    for dt in dts:
+        t, y_values = calc_func(dt)
+        plt.plot(t, y_values, label=f'dt = {dt}', linewidth=line_widths.get(dt, 1), 
+                 alpha=alphas.get(dt, 1), linestyle=line_styles.get(dt, '-'))
 
-    plt.xlabel('Redshift (z)')
-    plt.ylabel('Distance Modulus (μ)')
-    plt.title('Distance Modulus vs Redshift for Different Cosmological Models')
-    plt.legend()
+    plt.title(title)
+    plt.xlabel(r'$\tau$ (Gyr)')
+    plt.ylabel(y_label)
     plt.grid(True)
+    plt.legend()  # Add legend to differentiate the dt values
     plt.show()
 
-if __name__ == "__main__":
-    main()
+# Functions to return specific plots
+def plot_scale_factor(dts):
+    plot_multiple_dt(dts, r'Scale Factor a($\tau$) vs Time $\tau$', r'a($\tau$)', lambda dt: (calculate_quantities(dt)[:2]))
+
+def plot_redshift(dts):
+    plot_multiple_dt(dts, r'Redshift z($\tau$) vs Time $\tau$', r'z($\tau$)', lambda dt: (calculate_quantities(dt)[0], calculate_quantities(dt)[2]))
+
+def plot_proper_distance(dts):
+    plot_multiple_dt(dts, r'Proper Distance $d_p$($\tau$)', r'$d_p$ (Glyr)', lambda dt: (calculate_quantities(dt)[0], calculate_quantities(dt)[3]))
+
+def plot_angular_diameter_distance(dts):
+    plot_multiple_dt(dts, r'Angular Diameter Distance $d_A$($\tau$)', r'$d_A$ (Glyr)', lambda dt: (calculate_quantities(dt)[0], calculate_quantities(dt)[4]))
+
+def plot_luminosity_distance(dts):
+    plot_multiple_dt(dts, r'Luminosity Distance $d_L$($\tau$)', r'$d_L$ (Glyr)', lambda dt: (calculate_quantities(dt)[0], calculate_quantities(dt)[5]))
+
+def plot_hubble_parameter(dts):
+    plot_multiple_dt(dts, r'Hubble Parameter H($\tau$) vs $\tau$', 'H (km/s/Mpc)', lambda dt: (calculate_quantities(dt)[0], calculate_quantities(dt)[6]))
+
+def plot_distance_modulus(dts):
+    plot_multiple_dt(dts, r'Distance Modulus $\mu$ vs $\tau$', r'$\mu$', lambda dt: (calculate_quantities(dt)[0], calculate_quantities(dt)[7]))
+
+# List of dt values to plot
+dts = [1.0, 0.1, 0.01]
+
+# Call the plotting functions
+plot_scale_factor(dts)
+plot_redshift(dts)
+plot_proper_distance(dts)
+plot_angular_diameter_distance(dts)
+plot_luminosity_distance(dts)
+plot_hubble_parameter(dts)
+plot_distance_modulus(dts)
